@@ -81,12 +81,46 @@ Per-call metrics are captured by a `bench()` context manager in `src/bench.py`:
 - **Cost** — tokens × posted per-token pricing snapshot (see `PRICING` in `src/bench.py`; verify before citing numbers).
 - **Validity rate** — fraction of responses that both parse as JSON and pass the Pydantic schema.
 
-Results aggregate into a pandas DataFrame via `summarise()`. Run the notebooks to populate your own numbers; pricing, model behaviour, and SDK ergonomics all move, so this repo is structured to be re-run rather than to advertise a snapshot.
+Results aggregate into a pandas DataFrame via `summarise()`. Pricing, model behaviour, and SDK ergonomics all move, so this repo is structured to be re-run rather than to advertise a snapshot.
 
 Default models (swap in the notebook's `OPENAI_MODEL` / `ANTHROPIC_MODEL` constants):
 
 - OpenAI `gpt-5.4-mini`
 - Anthropic `claude-haiku-4-5`
+
+## Findings (run on 2026-04-24, N=20, single trial)
+
+### Notebook 01 — Function calling / tool use
+
+| | OpenAI `gpt-5.4-mini` | Anthropic `claude-haiku-4-5` |
+|---|---|---|
+| Latency p50 | 1209 ms | **1056 ms** |
+| Latency p95 | **2629 ms** | 2952 ms |
+| Mean input tokens | **239** | 816 |
+| Mean output tokens | **48** | 88 |
+| Cost / 1k calls | **$0.40** | $1.26 |
+| Schema validity | 100% | 100% |
+
+### Notebook 02 — Structured output (OpenAI strict `json_schema` vs Anthropic prefill)
+
+| | OpenAI `gpt-5.4-mini` | Anthropic `claude-haiku-4-5` |
+|---|---|---|
+| Latency p50 | 1113 ms | **970 ms** |
+| Latency p95 | 1731 ms | **1510 ms** |
+| Mean input tokens | **144** | 288 |
+| Mean output tokens | **43** | 59 |
+| Cost / 1k calls | **$0.30** | $0.58 |
+| Schema validity | 100% | 100% |
+
+### Observations
+
+- **Anthropic counts tool-schema tokens as input;** OpenAI reports a leaner input in tool-use mode. Across these runs Anthropic billed ~3.4× the input tokens in function calling and ~2× in structured output. That explains most of the cost delta — it is not raw unit price.
+- **Anthropic wins median latency on both tasks**, but tails are uneven: on function calling Anthropic's p95 was ~12% *worse* than OpenAI's despite a faster p50, so the cost of a slow call is higher. For user-facing flows where p95 is the budget that matters, this inverts the "Anthropic is faster" headline.
+- **Structured output is materially cheaper than tool-use for both providers.** OpenAI `json_schema` strict → 25% cheaper than tools. Anthropic prefill → 54% cheaper than tool-use, because the tool schema stops inflating the input. If JSON is all you need, structured output is the right default.
+- **100% validity at N=20** is a small-sample ceiling, not proof. Both providers' strict/constrained paths parsed cleanly here; a real eval would need N≥100 with trickier schemas (nested, optional, enum edge cases) to surface failure modes.
+- **19/20 sentiment agreement between providers.** The one disagreement was a positive review with one negative feature mention — OpenAI classified it as `mixed`, Anthropic as `positive`. Both defensible; it exposes that "mixed" is an ambiguous label more than a model disagreement.
+
+A longer writeup with the narrative is in [`FINDINGS.md`](./FINDINGS.md).
 
 ## License
 

@@ -37,8 +37,8 @@ OPENAI_MODEL = "gpt-5.4-mini"
 ANTHROPIC_MODEL = "claude-haiku-4-5"
 
 # %%
-# Load reviews.
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "reviews.json"
+# Load reviews. Works whether the notebook is executed from the repo root or from notebooks/.
+DATA_PATH = next(p for p in (Path("data/reviews.json"), Path("../data/reviews.json")) if p.exists())
 reviews = json.loads(DATA_PATH.read_text())
 print(f"Loaded {len(reviews)} reviews")
 
