@@ -35,12 +35,15 @@ PRICING = {
 
 @dataclass
 class Record:
-    label: str                      # e.g. "openai/gpt-4o-mini — function_calling"
-    model: str                      # e.g. "gpt-4o-mini"
+    label: str                      # e.g. "openai/gpt-5.4-mini — function_calling"
+    model: str                      # e.g. "gpt-5.4-mini"
     provider: str                   # "openai" or "anthropic"
     latency_ms: float = 0.0
-    input_tokens: int = 0
+    input_tokens: int = 0            # uncached input tokens (full price)
     output_tokens: int = 0
+    # Anthropic prompt caching (0 for non-cached / non-Anthropic calls):
+    cache_creation_input_tokens: int = 0   # priced at 1.25x input (5-min ephemeral TTL)
+    cache_read_input_tokens: int = 0       # priced at 0.1x input
     ok: bool = False                # True if the response parsed + validated
     error: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -50,7 +53,12 @@ class Record:
         p = PRICING.get(self.model)
         if not p:
             return 0.0
-        return self.input_tokens * p["input"] + self.output_tokens * p["output"]
+        return (
+            self.input_tokens * p["input"]
+            + self.cache_creation_input_tokens * p["input"] * 1.25
+            + self.cache_read_input_tokens * p["input"] * 0.1
+            + self.output_tokens * p["output"]
+        )
 
 
 # Shared results list populated by the `bench` context manager.
@@ -84,6 +92,10 @@ def summarise(records: list[Record] | None = None) -> pd.DataFrame:
     for r in records:
         by_label.setdefault(r.label, []).append(r)
 
+    any_cache = any(
+        r.cache_creation_input_tokens or r.cache_read_input_tokens for r in records
+    )
+
     for label, rs in by_label.items():
         latencies = [r.latency_ms for r in rs]
         ok_rate = sum(1 for r in rs if r.ok) / len(rs)
@@ -95,7 +107,7 @@ def summarise(records: list[Record] | None = None) -> pd.DataFrame:
             quantiles(latencies, n=100)[49] if len(latencies) >= 2 else latencies[0],
             quantiles(latencies, n=100)[94] if len(latencies) >= 2 else latencies[0],
         )
-        rows.append({
+        row = {
             "label": label,
             "n": len(rs),
             "latency_p50_ms": round(p50, 1),
@@ -104,7 +116,11 @@ def summarise(records: list[Record] | None = None) -> pd.DataFrame:
             "mean_output_tokens": round(mean(out_tokens), 1),
             "cost_per_1k_usd": round(cost_per_call * 1000, 4),
             "ok_rate": round(ok_rate, 3),
-        })
+        }
+        if any_cache:
+            row["mean_cache_creation"] = round(mean([r.cache_creation_input_tokens for r in rs]), 1)
+            row["mean_cache_read"] = round(mean([r.cache_read_input_tokens for r in rs]), 1)
+        rows.append(row)
 
     return pd.DataFrame(rows)
 

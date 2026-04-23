@@ -14,6 +14,7 @@ Current comparisons:
 |---|---|
 | `01_function_calling.ipynb` | Tool use / function calling — structured classification and extraction |
 | `02_structured_output.ipynb` | JSON-schema-constrained output — same task, different mechanism |
+| `03_prompt_caching.ipynb` | Anthropic prompt caching — does it close the tool-schema cost gap from notebook 01? |
 
 Metrics tracked per SDK per call:
 - Request latency (p50, p95, mean)
@@ -112,12 +113,27 @@ Default models (swap in the notebook's `OPENAI_MODEL` / `ANTHROPIC_MODEL` consta
 | Cost / 1k calls | **$0.30** | $0.58 |
 | Schema validity | 100% | 100% |
 
+### Notebook 03 — Anthropic prompt caching (follow-up to the tool-schema cost gap)
+
+Padded the system prompt (rubric + 14 few-shot examples, 4741 tokens) to clear Haiku 4.5's 4096-token cache minimum, then compared `cache_control` on vs off.
+
+| | Baseline (no cache) | Cached |
+|---|---|---|
+| Mean input tokens (uncached) | 4872 | 454 |
+| Mean cache-read tokens | 0 | **4197** |
+| Cost per 1k calls | $5.30 | **$1.58** (−70%) |
+| Latency p50 | 1089 ms | 1021 ms |
+| Latency p95 | **5525 ms** | **1930 ms** (−65%) |
+| Break-even vs baseline | — | call 2 |
+
 ### Observations
 
-- **Anthropic counts tool-schema tokens as input;** OpenAI reports a leaner input in tool-use mode. Across these runs Anthropic billed ~3.4× the input tokens in function calling and ~2× in structured output. That explains most of the cost delta — it is not raw unit price.
-- **Anthropic wins median latency on both tasks**, but tails are uneven: on function calling Anthropic's p95 was ~12% *worse* than OpenAI's despite a faster p50, so the cost of a slow call is higher. For user-facing flows where p95 is the budget that matters, this inverts the "Anthropic is faster" headline.
-- **Structured output is materially cheaper than tool-use for both providers.** OpenAI `json_schema` strict → 25% cheaper than tools. Anthropic prefill → 54% cheaper than tool-use, because the tool schema stops inflating the input. If JSON is all you need, structured output is the right default.
-- **100% validity at N=20** is a small-sample ceiling, not proof. Both providers' strict/constrained paths parsed cleanly here; a real eval would need N≥100 with trickier schemas (nested, optional, enum edge cases) to surface failure modes.
+- **Anthropic counts tool-schema tokens as input;** OpenAI reports a leaner input in tool-use mode. Across notebook 01 runs Anthropic billed ~3.4× the input tokens in function calling and ~2× in structured output. That explains most of the cost delta — it is not raw unit price.
+- **Anthropic wins median latency on notebook 01 & 02**, but tails are uneven: on function calling Anthropic's p95 was ~12% *worse* than OpenAI's despite a faster p50. For user-facing flows where p95 is the budget that matters, this inverts the "Anthropic is faster" headline.
+- **Structured output is materially cheaper than tool-use for both providers.** OpenAI `json_schema` strict → 25% cheaper than tools. Anthropic prefill → 54% cheaper than tool-use, because the tool schema stops inflating the input.
+- **Prompt caching closes the cost gap and cuts p95 latency.** On a 4741-token static prefix, caching drops per-call cost to 30% of baseline and p95 latency to 35% of baseline. Break-even is call 2 — the 1.25× write premium pays back in one read.
+- **But caching has a silent-failure mode:** Haiku 4.5 requires ≥4096 tokens in the cached prefix. First run of notebook 03 landed at 3874 tokens; the API returned `cache_creation=0` and `cache_read=0` on every call with no error. Only production-shaped prompts (rubrics, few-shots, guidelines) reliably clear the threshold — a bare tool schema (~250 tokens) never will.
+- **100% validity at N=20** across notebooks 01 and 02 is a small-sample ceiling, not proof. Both providers' strict/constrained paths parsed cleanly here; a real eval would need N≥100 with trickier schemas (nested, optional, enum edge cases) to surface failure modes.
 - **19/20 sentiment agreement between providers.** The one disagreement was a positive review with one negative feature mention — OpenAI classified it as `mixed`, Anthropic as `positive`. Both defensible; it exposes that "mixed" is an ambiguous label more than a model disagreement.
 
 A longer writeup with the narrative is in [`FINDINGS.md`](./FINDINGS.md).
