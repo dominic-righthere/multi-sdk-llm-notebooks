@@ -65,18 +65,32 @@ uv run jupyter lab
     └── 02_structured_output.py
 ```
 
-## Findings summary
+## Methodology
 
-*(Fill in after running the notebooks — example shape below.)*
+Each notebook runs the **same 20 product reviews** through both providers with:
 
-| Dimension | OpenAI (gpt-4o-mini) | Anthropic (claude-haiku-4-5) | Winner / notes |
-|---|---|---|---|
-| Latency p50 | ___ ms | ___ ms | ___ |
-| Latency p95 | ___ ms | ___ ms | ___ |
-| Cost per 1k calls | $___ | $___ | ___ |
-| JSON validity rate | __% | __% | ___ |
-| Schema conformance | __% | __% | ___ |
-| Ergonomics (subjective) | ___ | ___ | ___ |
+- Identical system prompt and user template (`src/prompts.py`).
+- Identical output schema — the only thing that differs is the provider-specific wrapping (OpenAI `tools`/`response_format` vs Anthropic `tools`/prefill).
+- `temperature=0` on both sides for determinism.
+- A Pydantic validator applied to the parsed response to score schema conformance independently of provider-reported "success".
+
+Per-call metrics are captured by a `bench()` context manager in `src/bench.py`:
+
+- **Latency** — wall-clock request time (p50, p95, mean).
+- **Tokens** — input + output from each provider's usage object.
+- **Cost** — tokens × posted per-token pricing snapshot (see `PRICING` in `src/bench.py`; verify before citing numbers).
+- **Validity rate** — fraction of responses that both parse as JSON and pass the Pydantic schema.
+
+Results aggregate into a pandas DataFrame via `summarise()`. Run the notebooks to populate your own numbers; pricing, model behaviour, and SDK ergonomics all move, so this repo is structured to be re-run rather than to advertise a snapshot.
+
+Default models (swap in the notebook's `OPENAI_MODEL` / `ANTHROPIC_MODEL` constants):
+
+- OpenAI `gpt-5.4-mini`
+- Anthropic `claude-haiku-4-5`
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE).
 
 ## Author
 

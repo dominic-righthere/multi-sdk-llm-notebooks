@@ -7,7 +7,6 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .DS_Store
-uv.lock
 dist/
 *.egg-info/
 results/

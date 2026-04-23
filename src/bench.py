@@ -23,11 +23,11 @@ from typing import Any
 
 import pandas as pd
 
-# Posted per-token pricing (USD), update as providers change.
-# Numbers here are placeholders — replace with the current pricing for the models you test.
+# Posted per-token pricing (USD) — snapshot 2026-04-23.
+# Verify against vendor pricing pages before reporting numbers; rates change.
 PRICING = {
-    "gpt-4o-mini": {"input": 0.15 / 1_000_000, "output": 0.60 / 1_000_000},
-    "gpt-4o":      {"input": 2.50 / 1_000_000, "output": 10.00 / 1_000_000},
+    "gpt-5.4-mini":       {"input": 0.75 / 1_000_000, "output": 4.50 / 1_000_000},
+    "gpt-5.4":            {"input": 2.50 / 1_000_000, "output": 15.00 / 1_000_000},
     "claude-haiku-4-5":   {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000},
     "claude-sonnet-4-6":  {"input": 3.00 / 1_000_000, "output": 15.00 / 1_000_000},
 }

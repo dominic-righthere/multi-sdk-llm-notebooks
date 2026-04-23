@@ -33,7 +33,7 @@ from src.prompts import SCHEMA, SYSTEM_PROMPT, USER_TEMPLATE
 load_dotenv()
 
 # %%
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "gpt-5.4-mini"
 ANTHROPIC_MODEL = "claude-haiku-4-5"
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "reviews.json"

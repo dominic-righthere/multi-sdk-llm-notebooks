@@ -33,7 +33,7 @@ load_dotenv()
 
 # %%
 # Models to test. Swap as you like — bench.py has pricing for the common picks.
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "gpt-5.4-mini"
 ANTHROPIC_MODEL = "claude-haiku-4-5"
 
 # %%
