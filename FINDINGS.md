@@ -184,6 +184,60 @@ This is an API-level migration that didn't change the SDK version — the same `
 
 ---
 
+## Finding 7: The number that actually matters is cost-per-successful-task, and it compounds
+
+Everything before this finding measures *a call*: per-call latency, per-call tokens, per-call cost. Those numbers are useful but incomplete for agent deployments, because an agent doesn't succeed in one call — it succeeds in *N* calls, and those N depend on the model. A provider that takes 6 turns at $0.002/turn to succeed is more expensive than one that takes 3 turns at $0.003/turn — even though its per-call cost is lower.
+
+So notebook 05 runs a real multi-step agent loop, with deterministic tools and ground truth, and measures the number that actually controls agent pricing: **cost per successful task.**
+
+The setup is designed to age well — this was the critique that prompted it. Every other latency number in this repo is a snapshot of what the deployment looked like on 2026-04-24; a run in June might flip every conclusion. Notebook 05's numbers don't depend on server load:
+
+- 12-product catalog, per-dimension scores, fixed.
+- 18 parameterized tasks ("recommend a {category} under ${budget} that maximizes {priority}"). Ground truth = in-budget product with highest score on the priority dimension.
+- 4 tools (`search_products`, `get_reviews`, `compare`, `finalize`) with production-realistic schemas — `strict: true` on both providers. Tools are pure functions of the catalog.
+- 20% error injection on non-finalize calls, seeded deterministically per (task, provider).
+- Common orchestration loop. Each provider's API call uses its native tool-use shape (Anthropic content-block `tool_use`/`tool_result`, OpenAI `tool_calls`/`tool` messages), so the comparison isn't washed out by harness bias.
+
+Both providers scored 18/18 on success. That's itself a finding — **at this task complexity, current-gen small models close simple agent loops reliably.** The differentiation shows up in the margins:
+
+|  | OpenAI `gpt-5.4-mini` | Anthropic `claude-haiku-4-5` |
+|---|---|---|
+| Success rate | 100% | 100% |
+| Mean turns to completion | 3.78 | **3.44** (−9%) |
+| Mean cost per call | $0.00071 | $0.00226 (3.2×) |
+| Mean cost per successful task | **$0.0027** | $0.0078 (2.9×) |
+| Errors encountered (seeded 20%) | 16 | 11 |
+| Recovery rate | 0.75 | 0.73 |
+
+Three things worth saying about this.
+
+### Anthropic is more efficient per turn, but that doesn't offset the per-call cost gap
+
+On this workload, Anthropic closes the loop in 9% fewer turns. That's a real efficiency signal — the model decides it has enough information to finalize sooner. But per-call cost is 3.2× higher (the tool-schema token tax from Finding 1, compounded by tool-result content now being part of the input on every subsequent turn). Even with 9% fewer turns, cost per successful task is 2.9× higher.
+
+If Anthropic eliminated the per-turn cost gap with caching (Finding 5 showed 70% savings on single-call workloads with a static prefix), the picture could invert. That's the experiment worth running next — a caching-enabled agent loop. This notebook deliberately leaves caching off to isolate the loop-behavior measurement.
+
+### Recovery rates are nearly identical
+
+Both models retried failed tool calls at roughly the same rate — 73–75%. Neither has a clear edge on graceful degradation at 20% error rate. That's a well-I-didn't-expect-that finding: recovery felt like an obvious capability axis, but on this shape of task it doesn't differentiate.
+
+What would differentiate? Probably **cascading errors** — errors on every call until the model escalates, or errors that hint at wrong-input rather than transient-outage. That's a follow-up experiment.
+
+### Why this benchmark ages well — and what it doesn't tell you
+
+The catalog is fixed. The tool semantics are fixed. The ground truth is a pure function. The failure-mode taxonomy is stable. A benchmark run in October should produce the same *shape* of comparison — differences in the numbers would reflect actual model improvements (or regressions), not deployment weather.
+
+What this specific run doesn't tell you:
+
+- **How harder tasks differentiate.** Tasks where ground truth is ambiguous, budgets are tighter, or categories don't exist would drive success rate below 100% and separate the models on reliability. This benchmark is at saturation; both models are above the ceiling.
+- **How smaller or older models fail.** Running the same benchmark on a previous-generation Haiku or a mini model would produce failure modes (`loop`, `premature_finalize`, `hallucinated_tool`) that this run never triggered.
+- **How prompt caching reshapes the cost picture.** If caching were enabled, the 2.9× cost gap would likely collapse — that's the obvious follow-up notebook.
+- **How well this generalizes to real tools.** Mock tools are deterministic; real APIs aren't. Timeouts, partial failures, and rate limits change agent behavior in ways this harness doesn't capture.
+
+The value of the benchmark isn't the specific numbers. It's the shape of the comparison and the fact that the harness runs clean. The right use of this is as a durable regression test — if you want to know whether a model update improves agent-loop behavior, this is a repeatable way to find out.
+
+---
+
 ## What I'd do next (and what I won't claim)
 
 Things this run does NOT tell you, that an honest writeup should name:
@@ -194,6 +248,8 @@ Things this run does NOT tell you, that an honest writeup should name:
 - How either behaves in multi-turn tool-use loops, where output becomes input on every turn.
 - Whether OpenAI's automatic prompt caching (`prompt_tokens_details.cached_tokens`) closes the gap symmetrically — I only measured the Anthropic side of caching.
 - How TTFT and throughput change under concurrent load — single-request numbers are a floor, not a ceiling.
+- How the agent-loop benchmark behaves with prompt caching enabled — the obvious follow-up to Finding 7.
+- How the agent-loop benchmark behaves at harder task difficulty (tighter budgets, ambiguous priorities, missing categories) where 100% success ceases to be the floor.
 
 ## What I got out of building this
 
