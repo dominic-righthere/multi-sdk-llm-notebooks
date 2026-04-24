@@ -136,18 +136,64 @@ That's the real takeaway from running this thing end-to-end: **the right questio
 
 ---
 
+## Finding 6: Streaming changes what latency means
+
+Up to now every latency number in this repo has been **total request time** — the clock from `create()` call to the last byte of the response. That's the right metric for batch workloads, but the wrong one for any user-facing flow, where what actually matters is **TTFT — time to first token**. The user doesn't perceive the request as complete; they perceive it as responsive, and responsiveness is "when did something visible happen?"
+
+So notebook 04 streams a small generative task (2-sentence review summary + sentiment label) through both providers, warm-up call included, and captures TTFT in the same `perf_counter()` clock as the total latency.
+
+| | OpenAI gpt-5.4-mini | Anthropic claude-haiku-4-5 |
+|---|---|---|
+| TTFT p50 | **620 ms** | 725 ms |
+| TTFT p95 | 1531 ms | **1023 ms** |
+| Total p50 | **1038 ms** | 1247 ms |
+| Total p95 | 2100 ms | **1524 ms** |
+| Throughput (tokens/sec, steady-state) | **127** | 101 |
+
+Three findings worth naming.
+
+### The shape of the two providers is different
+
+On every metric at the median, OpenAI is faster:
+
+- First token arrives ~15% sooner.
+- Once the stream starts, tokens flow ~26% faster.
+
+But on the **p95 tail**, the picture flips completely:
+
+- OpenAI TTFT p95 (1531 ms) is **50% worse** than Anthropic's (1023 ms).
+- OpenAI total p95 (2100 ms) is **38% worse** than Anthropic's (1524 ms).
+
+This is the kind of shape you don't see unless you measure both ends of the distribution. If a writeup reports only "OpenAI is 15% faster," it's telling you the happy-path story and hiding the tail. The per-call data (visible in the notebook) shows OpenAI has 2–3 clearly-outlier requests where TTFT took ~1500 ms; Anthropic's worst cases cluster much tighter.
+
+### This inverts "which provider should I pick" for real UX
+
+Depending on what you're designing for, the answer flips:
+
+- **Chat UI with a progress spinner, user watching** — p50 TTFT is the budget. **Pick OpenAI.** User sees a response ~100 ms sooner at the median.
+- **User-facing streaming under a hard SLA** — p95 TTFT is the budget. **Pick Anthropic.** Tail is 33% tighter; fewer users hit a visible pause.
+- **Long generative UI (code, documents) where throughput dominates** — tokens/sec matters more than TTFT. **Pick OpenAI.** +26% steady-state throughput means the stream finishes meaningfully sooner for long outputs.
+
+"Which is faster" is not a well-posed question. "Faster at which latency quantile, for which UX constraint?" is.
+
+### The silent breaking change in OpenAI's SDK
+
+Worth calling out because it cost me one failed notebook run: **`max_tokens` no longer works on gpt-5.4-mini**. The request returns a 400 with "Use 'max_completion_tokens' instead." Existing gpt-4o code migrated to gpt-5 silently stops working.
+
+This is an API-level migration that didn't change the SDK version — the same `openai` SDK accepts both, but the gpt-5 series server-side requires the new parameter name. The kind of thing you only find out when you actually try to use the new model, not when you read the changelog.
+
+---
+
 ## What I'd do next (and what I won't claim)
 
 Things this run does NOT tell you, that an honest writeup should name:
 
 - How either provider handles concurrency, rate limits, retries.
 - How either provider handles long context (≥32k).
-- Streaming latency (TTFT vs TTLT) — different shape of question, often the one UX actually cares about.
 - How either does on nested or genuinely adversarial schemas.
 - How either behaves in multi-turn tool-use loops, where output becomes input on every turn.
 - Whether OpenAI's automatic prompt caching (`prompt_tokens_details.cached_tokens`) closes the gap symmetrically — I only measured the Anthropic side of caching.
-
-The next notebook I'd add is **streaming TTFT** — real-world UX metric, underrepresented in comparison repos.
+- How TTFT and throughput change under concurrent load — single-request numbers are a floor, not a ceiling.
 
 ## What I got out of building this
 

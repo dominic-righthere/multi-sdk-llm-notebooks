@@ -39,6 +39,7 @@ class Record:
     model: str                      # e.g. "gpt-5.4-mini"
     provider: str                   # "openai" or "anthropic"
     latency_ms: float = 0.0
+    ttft_ms: float = 0.0             # time to first streamed token (0 for non-streaming calls)
     input_tokens: int = 0            # uncached input tokens (full price)
     output_tokens: int = 0
     # Anthropic prompt caching (0 for non-cached / non-Anthropic calls):
@@ -95,6 +96,7 @@ def summarise(records: list[Record] | None = None) -> pd.DataFrame:
     any_cache = any(
         r.cache_creation_input_tokens or r.cache_read_input_tokens for r in records
     )
+    any_ttft = any(r.ttft_ms for r in records)
 
     for label, rs in by_label.items():
         latencies = [r.latency_ms for r in rs]
@@ -117,6 +119,13 @@ def summarise(records: list[Record] | None = None) -> pd.DataFrame:
             "cost_per_1k_usd": round(cost_per_call * 1000, 4),
             "ok_rate": round(ok_rate, 3),
         }
+        if any_ttft:
+            ttfts = [r.ttft_ms for r in rs if r.ttft_ms]
+            if ttfts:
+                ttft_p50 = quantiles(ttfts, n=100)[49] if len(ttfts) >= 2 else ttfts[0]
+                ttft_p95 = quantiles(ttfts, n=100)[94] if len(ttfts) >= 2 else ttfts[0]
+                row["ttft_p50_ms"] = round(ttft_p50, 1)
+                row["ttft_p95_ms"] = round(ttft_p95, 1)
         if any_cache:
             row["mean_cache_creation"] = round(mean([r.cache_creation_input_tokens for r in rs]), 1)
             row["mean_cache_read"] = round(mean([r.cache_read_input_tokens for r in rs]), 1)
