@@ -238,6 +238,75 @@ The value of the benchmark isn't the specific numbers. It's the shape of the com
 
 ---
 
+## Finding 8: Caching doesn't close the agent-loop gap — and padding to enable it can make things worse
+
+Finding 7 measured the 2.9× Anthropic cost premium in a multi-turn agent loop. Finding 5 showed Anthropic prompt caching saves 70% on single-call workloads. I went into this notebook expecting the answer to be "caching closes the gap." I was wrong.
+
+The setup: same 18 agent tasks as notebook 05, but with a padded 4387-token system prompt (sized to clear Haiku 4.5's cache minimum — rubric, tool contracts, five worked examples, pitfall lists). Three runs:
+
+1. **OpenAI gpt-5.4-mini** with the padded prompt. OpenAI's automatic prefix caching is always on and fires without any developer action.
+2. **Anthropic claude-haiku-4-5** with the padded prompt, **no** `cache_control`. Baseline for "this prompt shape without caching."
+3. **Anthropic claude-haiku-4-5** with the padded prompt, `cache_control` on the last system block.
+
+| | Cost per successful task | Ratio to OpenAI |
+|---|---|---|
+| OpenAI padded | **$0.00205** | 1.0× |
+| Anthropic padded, no cache | $0.01647 | 8.0× |
+| Anthropic padded, cached | $0.01315 | 6.4× |
+| *(Anthropic unpadded from notebook 05, reference)* | *$0.0078* | *2.9×* |
+
+Three findings fall out, each one sharper than the hypothesis I started with.
+
+### Explicit caching narrowed the Anthropic gap only 20%
+
+I expected caching to roughly close the 2.9× gap from Finding 7 — Finding 5 showed 70% savings on single-call. In a multi-turn loop the savings were much smaller: cost dropped from $0.01647 to $0.01315, a 20% reduction. The cached Anthropic run is still 6.4× more expensive than OpenAI.
+
+Why the gap between Finding 5 (70%) and Finding 8 (20%)? Two things:
+
+1. **Growing messages dilute the cached prefix.** In a single-turn benchmark, the cacheable prefix is almost all of the input. In a multi-turn agent loop, each turn's input is `tools + system + accumulating messages`. Only the first two cache; tool results + model responses on every prior turn do not. By turn 3 the uncached portion (messages) is competitive in size with the cached portion, so the 90% discount applies to a shrinking fraction of input.
+2. **Cache fired inconsistently.** Despite a 4387-token prefix (above the 4096 minimum) and tasks running back-to-back inside the 5-minute TTL window, `cache_read_input_tokens` was zero on 9 of 18 tasks. Why exactly is unclear — TTL expiration during notebook execution seems unlikely given runtime, but the end result is real. Half the tasks paid full price despite the cache_control marker being present.
+
+If the cache had fired on 100% of tasks the savings would have been bigger — but not enough to close the 8× gap. The structural issue is that the static prefix is ~30% of per-turn input in this workload; even perfect caching only discounts that 30%.
+
+### Padding the prompt to enable caching is net-negative on Anthropic
+
+This is the counterintuitive finding. The Anthropic cached run ($0.01315) is **more expensive** than the Anthropic unpadded run from notebook 05 ($0.0078). Which means: deliberately adding rubric and few-shots to cross the 4096-token cache minimum *made things worse*, not better, even with caching enabled.
+
+The math: padding adds ~4000 input tokens per turn. Across ~3.2 turns, that's ~12,800 additional input tokens per task. Even at 0.1× cached price that's still billed. At 1.0× uncached price (on the 50% of tasks where caching didn't fire), it's fully priced. The caching discount doesn't recover what the padding adds.
+
+The lesson: **"cache everything" is not a universal heuristic.** Caching pays when:
+
+- Your prompt is naturally large (you'd be sending it anyway — production rubrics, RAG context).
+- The cache fires reliably across calls.
+- The cached prefix is a large fraction of each call's input.
+
+When any of those conditions are missing, caching is either a small win or a net loss. The cheapest Anthropic shape on this workload turned out to be the minimal prompt from notebook 05, not the padded-and-cached one.
+
+### OpenAI automatic caching did the opposite
+
+The same padded prompt made OpenAI **cheaper**, not more expensive. OpenAI's automatic prefix caching:
+
+- Fired on **100%** of tasks (vs Anthropic's 50% hit rate on this workload).
+- Delivered ~6,770 cached tokens per task at 0.1× input price (per OpenAI's posted `cached_input` pricing).
+- Required zero developer action — no `cache_control` markers, no breakpoint placement, no TTL to worry about.
+
+Comparing notebook 05 OpenAI ($0.0027 per task, unpadded, no explicit cache) vs notebook 06 OpenAI ($0.00205 per task, padded, auto-cache fires): **the padded prompt is ~24% cheaper despite being ~4× larger**. Auto-caching turned extra prompt into essentially free extra prompt.
+
+This is a real architectural difference. OpenAI's caching is invisible; Anthropic's is explicit. Invisible has the advantage of always-on, always-working. Explicit has the advantage of predictable behavior (when it fires) and user control over what gets cached. On a workload this size, invisible wins on pure cost grounds.
+
+### What this changes about architecture advice
+
+Finding 7 said: for agent deployments, cost-per-successful-task is the number that matters, and Anthropic is 2.9× more expensive on a minimal-prompt workload. Finding 8 adds nuance:
+
+- **If you're on Anthropic, don't pad the system prompt for caching's sake.** A minimal prompt without caching costs less than a padded-and-cached prompt unless your cache hits are >80% and your prefix is >60% of per-turn input.
+- **If your prompt is already large** (production RAG, long system, few-shot extensive), then caching is worth it — but expect 20–40% savings, not 70%. Single-call savings do not generalize to multi-turn.
+- **If you're on OpenAI, don't overthink it.** Auto-caching handles prefix reuse without developer intervention. Padding your prompt doesn't hurt as much as it might on Anthropic.
+- **The 5-min TTL is a real operational concern on Anthropic.** If your agent workflow has gaps longer than 5 minutes between turns, the cache expires; you pay full price again. Anthropic's 1-hour TTL (2× write cost) exists specifically for this case and is worth considering for bursty or batch agent workloads.
+
+A follow-up I didn't run but would add: measure the same comparison with Anthropic's 1-hour TTL cache, and at a much larger prefix (10K+ tokens, closer to real production RAG). The point at which explicit caching genuinely inverts the cost picture is probably up there. What notebook 06 measures is the middle ground where the answer is "no, and also don't try."
+
+---
+
 ## What I'd do next (and what I won't claim)
 
 Things this run does NOT tell you, that an honest writeup should name:
@@ -248,8 +317,10 @@ Things this run does NOT tell you, that an honest writeup should name:
 - How either behaves in multi-turn tool-use loops, where output becomes input on every turn.
 - Whether OpenAI's automatic prompt caching (`prompt_tokens_details.cached_tokens`) closes the gap symmetrically — I only measured the Anthropic side of caching.
 - How TTFT and throughput change under concurrent load — single-request numbers are a floor, not a ceiling.
-- How the agent-loop benchmark behaves with prompt caching enabled — the obvious follow-up to Finding 7.
 - How the agent-loop benchmark behaves at harder task difficulty (tighter budgets, ambiguous priorities, missing categories) where 100% success ceases to be the floor.
+- How Anthropic's 1-hour TTL cache (`cache_control: {ttl: "1h"}`) compares to the default 5-min ephemeral cache in an agent-loop workload — Finding 8 strongly suggests the 5-min TTL is too short for bursty real-world usage.
+- How a substantially larger cached prefix (10K–50K tokens, production-RAG scale) shifts the Anthropic-vs-OpenAI cost picture — Finding 8 measured the middle ground; the large-prefix regime may invert the conclusion.
+- Why Anthropic caching fired on only 50% of tasks in notebook 06 despite a stable prefix and back-to-back execution. A cache-warmup pass or deliberate retry shape might close this.
 
 ## What I got out of building this
 

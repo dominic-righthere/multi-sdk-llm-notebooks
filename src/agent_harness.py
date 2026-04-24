@@ -317,8 +317,13 @@ class TaskOutcome:
     model: str
     classification: str = "unknown"
     turns: int = 0
-    input_tokens: int = 0
+    input_tokens: int = 0                   # uncached input (full price)
     output_tokens: int = 0
+    # Cache token accounting (Anthropic explicit cache_control, OpenAI automatic
+    # prefix caching). Both providers bill cache reads at ~0.1x input; Anthropic
+    # cache writes are 1.25x input (5-min ephemeral TTL).
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
     errors_encountered: int = 0
     errors_recovered: int = 0  # retries of the same tool after an error
     finalized_id: str | None = None
@@ -332,7 +337,12 @@ class TaskOutcome:
         p = PRICING.get(self.model)
         if not p:
             return 0.0
-        return self.input_tokens * p["input"] + self.output_tokens * p["output"]
+        return (
+            self.input_tokens * p["input"]
+            + self.cache_creation_input_tokens * p["input"] * 1.25
+            + self.cache_read_input_tokens * p["input"] * 0.1
+            + self.output_tokens * p["output"]
+        )
 
 
 # ---------------- Anthropic agent-loop runner ----------------
@@ -342,11 +352,26 @@ def run_anthropic_task(
     model: str,
     task: dict[str, Any],
     max_turns: int = 10,
+    system: str | None = None,
+    use_cache: bool = False,
 ) -> TaskOutcome:
-    """Run one task via Anthropic. Returns the outcome + trajectory."""
+    """Run one task via Anthropic. Returns the outcome + trajectory.
+
+    If `use_cache` is True, the system prompt is sent as a cache-control'd text
+    block. Tools render before system, so a single breakpoint on the last system
+    block caches tools + system together. Cache tokens are attributed to
+    outcome.cache_creation_input_tokens / outcome.cache_read_input_tokens.
+    """
     outcome = TaskOutcome(task_index=task["index"], provider="anthropic", model=model)
     rng = random.Random(f"task-{task['index']}-anthropic")
     tools = as_anthropic_tools(neutral_tools())
+    system_text = system if system is not None else SYSTEM_PROMPT
+    if use_cache:
+        system_block: Any = [
+            {"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}
+        ]
+    else:
+        system_block = system_text
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": task["prompt"]},
     ]
@@ -359,12 +384,18 @@ def run_anthropic_task(
             resp = client.messages.create(
                 model=model,
                 max_tokens=1024,
-                system=SYSTEM_PROMPT,
+                system=system_block,
                 messages=messages,
                 tools=tools,
             )
             outcome.input_tokens += resp.usage.input_tokens
             outcome.output_tokens += resp.usage.output_tokens
+            outcome.cache_creation_input_tokens += (
+                getattr(resp.usage, "cache_creation_input_tokens", 0) or 0
+            )
+            outcome.cache_read_input_tokens += (
+                getattr(resp.usage, "cache_read_input_tokens", 0) or 0
+            )
 
             tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
             if not tool_uses:
@@ -415,13 +446,20 @@ def run_openai_task(
     model: str,
     task: dict[str, Any],
     max_turns: int = 10,
+    system: str | None = None,
 ) -> TaskOutcome:
-    """Run one task via OpenAI. Returns the outcome + trajectory."""
+    """Run one task via OpenAI. Returns the outcome + trajectory.
+
+    OpenAI automatic prefix caching is always active on the gpt-5 series; cached
+    tokens are reported via usage.prompt_tokens_details.cached_tokens and
+    attributed to outcome.cache_read_input_tokens here.
+    """
     outcome = TaskOutcome(task_index=task["index"], provider="openai", model=model)
     rng = random.Random(f"task-{task['index']}-openai")
     tools = as_openai_tools(neutral_tools())
+    system_text = system if system is not None else SYSTEM_PROMPT
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_text},
         {"role": "user", "content": task["prompt"]},
     ]
     last_tool_name: str | None = None
@@ -436,7 +474,13 @@ def run_openai_task(
                 messages=messages,
                 tools=tools,
             )
-            outcome.input_tokens += resp.usage.prompt_tokens
+            total_input = resp.usage.prompt_tokens
+            cached = 0
+            details = getattr(resp.usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached = getattr(details, "cached_tokens", 0) or 0
+            outcome.input_tokens += (total_input - cached)
+            outcome.cache_read_input_tokens += cached
             outcome.output_tokens += resp.usage.completion_tokens
             msg = resp.choices[0].message
 

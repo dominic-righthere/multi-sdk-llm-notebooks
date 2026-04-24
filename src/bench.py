@@ -26,6 +26,10 @@ import pandas as pd
 # Posted per-token pricing (USD) — snapshot 2026-04-23.
 # Verify against vendor pricing pages before reporting numbers; rates change.
 PRICING = {
+    # OpenAI cached_input tokens are billed at 0.1x input; Anthropic cache reads
+    # are also 0.1x input (5-min TTL) and cache writes are 1.25x. For a single
+    # cost_usd formula we keep only "input" / "output" here and apply cache
+    # multipliers inline on the Record / TaskOutcome cost properties.
     "gpt-5.4-mini":       {"input": 0.75 / 1_000_000, "output": 4.50 / 1_000_000},
     "gpt-5.4":            {"input": 2.50 / 1_000_000, "output": 15.00 / 1_000_000},
     "claude-haiku-4-5":   {"input": 1.00 / 1_000_000, "output": 5.00 / 1_000_000},

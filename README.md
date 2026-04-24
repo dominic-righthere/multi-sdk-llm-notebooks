@@ -17,6 +17,7 @@ Current comparisons:
 | `03_prompt_caching.ipynb` | Anthropic prompt caching — does it close the tool-schema cost gap from notebook 01? |
 | `04_streaming.ipynb` | Streaming TTFT vs total latency — the metric user-facing flows actually budget against |
 | `05_agent_loop.ipynb` | Agent-loop benchmark — mock tools, deterministic ground truth, 20% error injection. Success rate, turns, cost per successful task, recovery rate. |
+| `06_agent_loop_cached.ipynb` | Agent loop with padded prompt + prompt caching. Does caching close the multi-turn cost gap? (Spoiler: not really — and padding to enable caching is net-negative on Anthropic.) |
 
 Metrics tracked per SDK per call:
 - Request latency (p50, p95, mean)
@@ -115,6 +116,18 @@ Default models (swap in the notebook's `OPENAI_MODEL` / `ANTHROPIC_MODEL` consta
 | Cost / 1k calls | **$0.30** | $0.58 |
 | Schema validity | 100% | 100% |
 
+### Notebook 06 — Does caching close the multi-turn gap? (Deterministic)
+
+Same harness as notebook 05, but with a padded 4387-token system prompt (rubric, tool contracts, worked examples — production-shaped). Three runs, apples-to-apples:
+
+| Run | Cost / successful task | Ratio to OpenAI |
+|---|---|---|
+| OpenAI `gpt-5.4-mini` (padded, auto-cache fires 100%) | **$0.00205** | 1.0× |
+| Anthropic `claude-haiku-4-5` (padded, no `cache_control`) | $0.01647 | 8.0× |
+| Anthropic `claude-haiku-4-5` (padded, `cache_control` on) | $0.01315 | 6.4× |
+
+Explicit caching narrowed the gap only 20%. OpenAI's auto-caching made the padded prompt **cheaper** than the unpadded baseline ($0.00205 vs $0.0027 in notebook 05). Opposite effect of the same intervention across providers.
+
 ### Notebook 05 — Agent-loop benchmark (deterministic, ages well)
 
 18 parameterized tasks over a fixed 12-product mock catalog. 4 production-shaped tools, ground truth computed from the catalog, 20% error injection on non-finalize tool calls to test recovery. Common orchestration loop; native tool-use primitives on each provider.
@@ -160,6 +173,7 @@ Padded the system prompt (rubric + 14 few-shot examples, 4741 tokens) to clear H
 - **Structured output is materially cheaper than tool-use for both providers.** OpenAI `json_schema` strict → 25% cheaper than tools. Anthropic prefill → 54% cheaper than tool-use, because the tool schema stops inflating the input.
 - **Prompt caching closes the cost gap and cuts p95 latency.** On a 4741-token static prefix, caching drops per-call cost to 30% of baseline and p95 latency to 35% of baseline. Break-even is call 2 — the 1.25× write premium pays back in one read.
 - **Agent-loop performance is where this repo's durable findings live.** At this task complexity, both current-gen small models close simple agent loops with 100% reliability and roughly similar recovery rates (~73–75%). Anthropic completes tasks in ~9% fewer turns but costs ~2.9× more per successful task — the tool-schema token tax from Finding 1 compounds across multi-turn loops, which is why **cost-per-successful-task** is the unit-economics metric that actually matters for agent deployments, not cost-per-call. Numbers age well because the tools and catalog are deterministic.
+- **Padding a prompt to enable caching is NET-NEGATIVE on Anthropic in this workload.** Adding rubric + few-shots to clear Haiku 4.5's 4096-token cache minimum increased cost per task from $0.0078 (notebook 05) to $0.01315 (notebook 06 cached). OpenAI's automatic prefix caching makes the same padded prompt **cheaper** than unpadded ($0.00205 vs $0.0027). Same intervention, opposite effect per provider. "Cache everything" is not a universal heuristic — it pays only when the prompt is naturally large and the cache fires reliably.
 - **Streaming shape: OpenAI wins the median, Anthropic wins the tail.** *(snapshot — these numbers reflect deployment conditions on the run date.)* OpenAI delivers first-token faster at p50 (−15%) and generates tokens ~26% faster once started. But OpenAI's TTFT p95 is 50% worse than Anthropic's (1531 ms vs 1023 ms). If you design for p50 UX, pick OpenAI; if you design against a p95 SLA, Anthropic is more consistent.
 - **OpenAI `max_tokens` is deprecated on gpt-5.4-mini;** the new parameter is `max_completion_tokens`. Silent breakage if migrating existing code from gpt-4o.
 - **But caching has a silent-failure mode:** Haiku 4.5 requires ≥4096 tokens in the cached prefix. First run of notebook 03 landed at 3874 tokens; the API returned `cache_creation=0` and `cache_read=0` on every call with no error. Only production-shaped prompts (rubrics, few-shots, guidelines) reliably clear the threshold — a bare tool schema (~250 tokens) never will.
