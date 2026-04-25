@@ -4,6 +4,12 @@ Side-by-side benchmarks of the same LLM task implemented in the **OpenAI SDK** a
 
 Written as notebooks because the value is in the comparison walkthrough, not just the numbers.
 
+**Three entrypoints depending on what you want:**
+
+- This README — the headline tables and notebook index.
+- [`FINDINGS.md`](./FINDINGS.md) — the long-form narrative writeup of the eight findings, with reasoning and caveats.
+- [`IMPLICATIONS.md`](./IMPLICATIONS.md) — practical architecture guidance derived from the findings, organized by what you're building (classification pipeline / chat UI / agent / provider migration). Start here if you came for "what should I actually do?"
+
 ## Why this exists
 
 Most provider-comparison content is vibes or cherry-picked benchmarks. This repo runs the **same task** through both SDKs with the **same input data** and reports the deltas that actually matter when you're architecting a production LLM feature.
