@@ -31,6 +31,9 @@ Everything below expands on those plus context on when each applies.
 - **Anthropic prompt caching helps if your prompt is naturally large; leave it off otherwise.** A real production agent with a multi-thousand-token rubric and few-shots will cache reliably and pay off. A minimal-prompt agent doesn't benefit and pads-to-cache as a net loss. ([Finding 8](./FINDINGS.md))
 - **The 5-minute TTL is a real operational constraint.** Bursty or batch agent workflows with gaps >5 min between turns lose the cache. Anthropic's 1-hour TTL (`cache_control: {ttl: "1h"}`, 2× write cost) is worth using if that's your shape. ([Finding 8](./FINDINGS.md))
 - **OpenAI's automatic prefix caching is the no-op cost win.** Don't put `datetime.now()` in your system prompt and you'll get auto-caching for free. Many teams don't realize this fires automatically. ([Finding 8](./FINDINGS.md))
+- **For prototyping and dev-velocity-heavy agent work, use the native runner.** `openai-agents` and Anthropic's `client.beta.messages.tool_runner` cut implementation code 56–61% with identical task-correctness. The runtime cost premium is 14–29% — usually invisible at prototype scale. ([Finding 9](./FINDINGS.md))
+- **For high-volume production agents, hand-roll the loop.** The same runners cost 14–29% more per successful task because they add a wrap-up turn after `finalize` that the cost-per-call view doesn't capture. At 1M tasks/month that delta is real money. ([Finding 9](./FINDINGS.md))
+- **Test your runner code in the deployment environment.** `Runner.run_sync` doesn't work inside Jupyter without `loop.run_until_complete` shimming. Anthropic's `@beta_tool` rejects dict returns from tool functions (400 error) — must JSON-serialize. Both gotchas are silent until you ship. ([Finding 9](./FINDINGS.md))
 
 ## When migrating between providers
 

@@ -24,12 +24,116 @@ weather.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import random
 from dataclasses import dataclass, field
 from typing import Any
 
 from src.bench import PRICING
+
+# ---------------- Per-task context for decorator-based tools ----------------
+#
+# Native runners (`@function_tool` for OpenAI Agents SDK, `@beta_tool` for
+# Anthropic tool_runner) wrap plain Python functions. Inside those functions
+# we still need (a) the per-task seeded RNG so error injection matches the
+# hand-rolled harness, and (b) a place to capture finalize-call state so the
+# notebook can reconstruct outcomes after the runner exits. ContextVars give
+# us both without polluting tool signatures.
+
+TASK_RNG: contextvars.ContextVar[random.Random] = contextvars.ContextVar(
+    "agent_harness_task_rng"
+)
+TASK_STATE: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+    "agent_harness_task_state"
+)
+
+
+def fresh_task_state() -> dict[str, Any]:
+    """Initial per-task mutable state for decorated tools to populate."""
+    return {
+        "finalized_id": None,
+        "reason": None,
+        "called_tools": [],
+        "errors_encountered": 0,
+        "errors_recovered": 0,
+        "last_tool_name": None,
+        "last_tool_was_error": False,
+    }
+
+
+def _record_tool_call(name: str, result: dict[str, Any]) -> None:
+    """Update TASK_STATE based on a tool invocation + its result."""
+    state = TASK_STATE.get()
+    state["called_tools"].append(name)
+    is_error = "error" in result
+    if is_error:
+        state["errors_encountered"] += 1
+    elif state["last_tool_was_error"] and name == state["last_tool_name"]:
+        state["errors_recovered"] += 1
+    state["last_tool_name"] = name
+    state["last_tool_was_error"] = is_error
+
+
+# ---------------- Plain mock-tool functions (decorator-targeted) ----------------
+#
+# These functions are wrapped by both providers' tool decorators downstream.
+# They share the same mock_tool_call logic as the hand-rolled harness so the
+# error-injection rate and catalog responses are identical across all three
+# implementations (hand-rolled, OpenAI Agents SDK, Anthropic tool_runner).
+
+# Note on return types: the decorator-based tools return JSON-serialized
+# strings rather than dicts. Anthropic's `@beta_tool` requires string returns
+# (the API rejects raw object content on tool_result with HTTP 400). OpenAI's
+# `@function_tool` accepts either, so strings are the lowest-common-denominator
+# shape. The internal mock_tool_call still returns a dict so that the
+# state-tracking helper can inspect it for the "error" key before serialization.
+
+def tool_search_products(category: str, max_price: float) -> str:
+    """Search the product catalog by category and max price.
+
+    Returns matching products with id, name, price.
+    """
+    rng = TASK_RNG.get()
+    result = mock_tool_call(
+        "search_products", {"category": category, "max_price": max_price}, rng
+    )
+    _record_tool_call("search_products", result)
+    return json.dumps(result)
+
+
+def tool_get_reviews(product_id: str) -> str:
+    """Fetch per-dimension review scores for a specific product."""
+    rng = TASK_RNG.get()
+    result = mock_tool_call("get_reviews", {"product_id": product_id}, rng)
+    _record_tool_call("get_reviews", result)
+    return json.dumps(result)
+
+
+def tool_compare(product_ids: list[str], dimension: str) -> str:
+    """Compare two or more products on a specific dimension.
+
+    Returns the products ranked by score on that dimension.
+    """
+    rng = TASK_RNG.get()
+    result = mock_tool_call(
+        "compare", {"product_ids": product_ids, "dimension": dimension}, rng
+    )
+    _record_tool_call("compare", result)
+    return json.dumps(result)
+
+
+def tool_finalize(product_id: str, reason: str) -> str:
+    """Submit the final recommendation. Call exactly once per task."""
+    rng = TASK_RNG.get()
+    result = mock_tool_call(
+        "finalize", {"product_id": product_id, "reason": reason}, rng
+    )
+    _record_tool_call("finalize", result)
+    state = TASK_STATE.get()
+    state["finalized_id"] = product_id
+    state["reason"] = reason
+    return json.dumps(result)
 
 # ---------------- Fixed catalog ----------------
 #

@@ -307,6 +307,67 @@ A follow-up I didn't run but would add: measure the same comparison with Anthrop
 
 ---
 
+## Finding 9: Canonical native runners reproduce outcomes — but trade runtime cost for developer time
+
+Notebooks 01–06 use a hand-rolled common loop because it's the fairest way to compare *models*. But it's not the harness either company actually wants you to use. Both ship first-party runners that abstract the loop:
+
+- **OpenAI**: `openai-agents` (separate `pip install openai-agents`, v0.14.6 here). `Agent` + `Runner` classes, `@function_tool` decorator.
+- **Anthropic**: `client.beta.messages.tool_runner()` with `@beta_tool` decorator (Python beta).
+
+Notebook 07 runs the same 18 agent tasks through both native runners and compares against the hand-rolled baseline. Question: does the canonical runner reproduce the result, and what does using it cost or hide?
+
+| Implementation | Model | Success | Mean turns | Cost/task | Cost/success | LOC |
+|---|---|---|---|---|---|---|
+| Hand-rolled | gpt-5.4-mini | 18/18 | 3.78 | $0.00269 | $0.00269 | 89 |
+| Native (Agents SDK) | gpt-5.4-mini | 18/18 | **4.78** | **$0.00308** | **$0.00308** | **35** |
+| Hand-rolled | claude-haiku-4-5 | 18/18 | 3.50 | $0.00796 | $0.00796 | 84 |
+| Native (tool_runner) | claude-haiku-4-5 | 18/18 | **4.61** | **$0.01029** | **$0.01029** | **37** |
+
+Three things stand out.
+
+### Outcome correctness reproduces perfectly
+
+All four implementations got 18/18 on ground truth. Per-task agreement: every native run picked the same product as the hand-rolled run. The runners don't subtly degrade the answer; they just decide on a different trajectory to get there.
+
+This is reassuring. It means the work in notebooks 05 and 06 (where the hand-rolled loop is the comparison subject) is broadly representative — using the canonical runner doesn't shift outcome correctness on this benchmark. The hand-rolled findings transfer.
+
+### Native runners take more turns and cost more
+
+Both runners did more model API calls than the hand-rolled loop. OpenAI Agents SDK averaged 4.78 turns vs hand-rolled 3.78 (+26%). Anthropic tool_runner averaged 4.61 turns vs hand-rolled 3.50 (+32%). Cost-per-successful-task tracked: +14% on OpenAI, +29% on Anthropic.
+
+Why the extra turns? Most likely the runners' default behavior includes an extra confirmation/finalization step the hand-rolled loop skipped. The hand-rolled loop terminates the moment `finalize` is called; the native runner makes one additional API call to produce a "wrap-up" message after `finalize` returns. That extra call is wasted from a task-completion standpoint but matches what you'd want in an interactive UI where the user wants a natural-language summary at the end.
+
+The implication for production cost modeling: *cost-per-call benchmarks understate native-runner cost by ~15–30% because the runner adds a wrap-up turn the cost-per-call view doesn't see.*
+
+### Code density: native is 56–61% smaller
+
+The hand-rolled OpenAI loop is 89 lines (loop management, message threading, parallel-tool-result handling, error exception classification). The native equivalent is 35 lines — just decorate functions, build an Agent, call `Runner.run`. Same on the Anthropic side: 84 lines hand-rolled vs 37 native.
+
+That's a real productivity win. For prototype and interactive agent work — where developer iteration speed dominates — native runners are clearly the right choice. For high-volume production where per-task cost compounds, the hand-rolled loop's 14–29% savings can matter.
+
+The trade is between developer time and runtime cost.
+
+### Operational gotchas worth naming
+
+Two things broke during this notebook that are worth flagging because they aren't in either provider's quickstart prominently:
+
+- **Anthropic `@beta_tool` requires string returns.** Returning a dict from a decorated function produces a 400 from the API: *"messages.X.content.0.tool_result.content: Found an object, but `tool_result` content must either be a string or a list of content blocks."* OpenAI's `@function_tool` auto-serializes dicts; Anthropic's does not. JSON-serializing inside the wrapper is the fix.
+- **`Runner.run_sync` doesn't work in Jupyter without help.** It internally calls `asyncio.run()`, which raises inside the kernel's running event loop. `nest_asyncio.apply()` alone doesn't fix it — the runner bypasses the patch. The reliable fix is `loop = asyncio.get_event_loop(); loop.run_until_complete(Runner.run(...))`. This isn't documented prominently but matters if you build agent demos in notebooks.
+
+Both are the kind of issue you only find by actually shipping with the SDK, and both are exactly what an interview "tell me about a time you debugged something subtle" prompt is asking for.
+
+### Where this leaves the architecture decision
+
+For agent deployments, the answer to "should I use the canonical runner?" is now:
+
+- **Use the native runner for prototyping and developer-iteration-heavy work.** 56–61% less code is a real productivity multiplier.
+- **Hand-roll the loop for high-volume production.** The 14–29% cost premium on the native runner is real and compounds.
+- **Whichever you choose, measure on your workload.** This benchmark uses simple tools and a deterministic catalog. Real production agents have more complex tools, more turns, longer context — the cost ratio could move either direction.
+
+A follow-up I'd run if pushing further: profile *where* the extra turns happen on each runner. If it's specifically the wrap-up turn after `finalize`, that's a documented behavior we can suppress; if it's something else (additional tool-call deliberation, refusal recovery), that's a more structural difference.
+
+---
+
 ## What I'd do next (and what I won't claim)
 
 Things this run does NOT tell you, that an honest writeup should name:

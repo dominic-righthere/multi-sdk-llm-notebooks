@@ -24,6 +24,7 @@ Current comparisons:
 | `04_streaming.ipynb` | Streaming TTFT vs total latency — the metric user-facing flows actually budget against |
 | `05_agent_loop.ipynb` | Agent-loop benchmark — mock tools, deterministic ground truth, 20% error injection. Success rate, turns, cost per successful task, recovery rate. |
 | `06_agent_loop_cached.ipynb` | Agent loop with padded prompt + prompt caching. Does caching close the multi-turn cost gap? (Spoiler: not really — and padding to enable caching is net-negative on Anthropic.) |
+| `07_native_runners.ipynb` | Same agent task via each provider's canonical runner (`openai-agents`, `client.beta.messages.tool_runner`). Outcome reproducibility, cost/turn delta, code-density delta. |
 
 Metrics tracked per SDK per call:
 - Request latency (p50, p95, mean)
@@ -122,6 +123,19 @@ Default models (swap in the notebook's `OPENAI_MODEL` / `ANTHROPIC_MODEL` consta
 | Cost / 1k calls | **$0.30** | $0.58 |
 | Schema validity | 100% | 100% |
 
+### Notebook 07 — Hand-rolled loop vs canonical native runners
+
+Same 18 agent tasks, same mocks, same error injection. Three implementations: the hand-rolled common loop (notebooks 05/06), OpenAI Agents SDK (`Runner.run`), Anthropic `client.beta.messages.tool_runner`.
+
+| Implementation | Success | Mean turns | Cost / task | LOC |
+|---|---|---|---|---|
+| Hand-rolled, OpenAI | 18/18 | 3.78 | $0.00269 | 89 |
+| **Native (Agents SDK)** | **18/18** | **4.78** | **$0.00308** | **35** |
+| Hand-rolled, Anthropic | 18/18 | 3.50 | $0.00796 | 84 |
+| **Native (tool_runner)** | **18/18** | **4.61** | **$0.01029** | **37** |
+
+Native runners reproduce the answer correctly on every task but take more turns and cost ~14–29% more. They cut implementation code by 56–61%. The trade is between developer time and runtime cost.
+
 ### Notebook 06 — Does caching close the multi-turn gap? (Deterministic)
 
 Same harness as notebook 05, but with a padded 4387-token system prompt (rubric, tool contracts, worked examples — production-shaped). Three runs, apples-to-apples:
@@ -179,6 +193,7 @@ Padded the system prompt (rubric + 14 few-shot examples, 4741 tokens) to clear H
 - **Structured output is materially cheaper than tool-use for both providers.** OpenAI `json_schema` strict → 25% cheaper than tools. Anthropic prefill → 54% cheaper than tool-use, because the tool schema stops inflating the input.
 - **Prompt caching closes the cost gap and cuts p95 latency.** On a 4741-token static prefix, caching drops per-call cost to 30% of baseline and p95 latency to 35% of baseline. Break-even is call 2 — the 1.25× write premium pays back in one read.
 - **Agent-loop performance is where this repo's durable findings live.** At this task complexity, both current-gen small models close simple agent loops with 100% reliability and roughly similar recovery rates (~73–75%). Anthropic completes tasks in ~9% fewer turns but costs ~2.9× more per successful task — the tool-schema token tax from Finding 1 compounds across multi-turn loops, which is why **cost-per-successful-task** is the unit-economics metric that actually matters for agent deployments, not cost-per-call. Numbers age well because the tools and catalog are deterministic.
+- **Native agent runners trade runtime cost for developer time.** Both `openai-agents` and Anthropic's `client.beta.messages.tool_runner` reproduce hand-rolled outcomes 18/18 on this benchmark, but take 26–32% more turns and cost 14–29% more per task. They cut implementation code 56–61%. For interactive workloads where developer iteration matters more than per-call cost, the trade is favorable; for high-volume production agents, the hand-rolled loop is cheaper. ([Finding 9](./FINDINGS.md))
 - **Padding a prompt to enable caching is NET-NEGATIVE on Anthropic in this workload.** Adding rubric + few-shots to clear Haiku 4.5's 4096-token cache minimum increased cost per task from $0.0078 (notebook 05) to $0.01315 (notebook 06 cached). OpenAI's automatic prefix caching makes the same padded prompt **cheaper** than unpadded ($0.00205 vs $0.0027). Same intervention, opposite effect per provider. "Cache everything" is not a universal heuristic — it pays only when the prompt is naturally large and the cache fires reliably.
 - **Streaming shape: OpenAI wins the median, Anthropic wins the tail.** *(snapshot — these numbers reflect deployment conditions on the run date.)* OpenAI delivers first-token faster at p50 (−15%) and generates tokens ~26% faster once started. But OpenAI's TTFT p95 is 50% worse than Anthropic's (1531 ms vs 1023 ms). If you design for p50 UX, pick OpenAI; if you design against a p95 SLA, Anthropic is more consistent.
 - **OpenAI `max_tokens` is deprecated on gpt-5.4-mini;** the new parameter is `max_completion_tokens`. Silent breakage if migrating existing code from gpt-4o.
